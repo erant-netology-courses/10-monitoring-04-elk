@@ -1,0 +1,96 @@
+networks:
+  elastic:
+    driver: bridge
+
+volumes:
+  kibanadata: {}
+  logstashdata: {}
+  elasticsearch-hot: {}
+  elasticsearch-warm: {}
+
+services:
+  elasticsearch-hot:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.2
+    container_name: elasticsearch-hot
+    environment:
+      - node.name=elasticsearch-hot
+      - cluster.name=es-docker-cluster
+      - discovery.seed_hosts=elasticsearch-hot,elasticsearch-warm
+      - cluster.initial_master_nodes=elasticsearch-hot,elasticsearch-warm
+      - node.roles=master,data_content,data_hot
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - xpack.security.enabled=false
+    volumes:
+      - elasticsearch-hot:/usr/share/elasticsearch/data:Z
+    ports:
+      - 9200:9200
+    networks:
+      - elastic
+
+  elasticsearch-warm:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.2
+    container_name: elasticsearch-warm
+    environment:
+      - node.name=elasticsearch-warm
+      - cluster.name=es-docker-cluster
+      - discovery.seed_hosts=elasticsearch-hot,elasticsearch-warm
+      - cluster.initial_master_nodes=elasticsearch-hot,elasticsearch-warm
+      - node.roles=master,data_warm
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - xpack.security.enabled=false
+    volumes:
+      - elasticsearch-warm:/usr/share/elasticsearch/data:Z
+    networks:
+      - elastic
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.4.2
+    container_name: kibana
+    environment:
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch-hot:9200","http://elasticsearch-warm:9200"]'
+    ports:
+      - 5601:5601
+    volumes:
+      - kibanadata:/usr/share/kibana/data
+    networks:
+      - elastic
+    depends_on:
+      - elasticsearch-hot
+      - elasticsearch-warm
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:9.4.2
+    container_name: logstash
+    environment:
+      - "LS_JAVA_OPTS=-Xms256m -Xmx256m"
+    volumes:
+      - logstashdata:/usr/share/logstash/data
+      - ./configs/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+      # - ./configs/logstash.yml:/opt/logstash/config/logstash.yml:ro
+    networks:
+      - elastic
+    depends_on:
+      - elasticsearch-hot
+      - elasticsearch-warm
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:9.4.2
+    container_name: filebeat
+    privileged: true
+    user: root
+    command: filebeat -e -strict.perms=false
+    volumes:
+      - ./configs/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - elastic
+    depends_on:
+      - logstash
+
+  some_application:
+    image: library/python:3.9-alpine
+    container_name: some_app
+    volumes:
+      - ./pinger/:/opt/:Z
+    entrypoint: python3 /opt/run.py
